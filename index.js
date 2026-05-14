@@ -35,18 +35,13 @@ var blacklist = [
     '.innerHTML = "',
     ".innerHTML = ",
 ];
-let msgs = [
-`<b>
-Welcome to BonziBOARD. 
-</b><br>
-`
-];
-var adminPass = "biaclvb69!@";
+let msgs = [];
+var adminPass = "biabwiclvb696969!@";
 var Utils = {
     sanitizeString:(str)=>{
         if(typeof str !== "string")str = '';
         str = str.replaceAll('"','\\"');
-        str = str.replace(/[\x00-\x1F\x7F]/g, '');
+        str = str.replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/g, '');
         try {
             str = decodeURIComponent(JSON.parse('"'+str+'"'));
         } catch(e) {
@@ -81,11 +76,55 @@ var Utils = {
         array.forEach(value=>{result+=value;tick++;});
         result = result/tick;
         return result;
+    },
+	stringErr: (str1, str2)=>{
+    str1 = String(str1 || '');
+    str2 = String(str2 || '');
+    
+    if (str1 === str2) {
+        return {
+            difference: 0,
+            similarity: 1,
+            match: true
+        };
     }
+    var matrix = [];
+    var len1 = str1.length;
+    var len2 = str2.length;
+    for (var i = 0; i <= len1; i++) {
+        matrix[i] = [i];
+    }
+    for (var j = 0; j <= len2; j++) {
+        matrix[0][j] = j;
+    }
+    
+    
+    for (var i = 1; i <= len1; i++) {
+        for (var j = 1; j <= len2; j++) {
+            if (str1[i - 1] === str2[j - 1]) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j] + 1,    
+                    matrix[i][j - 1] + 1,    
+                    matrix[i - 1][j - 1] + 1 
+                );
+            }
+        }
+    }
+    
+    var distance = matrix[len1][len2];
+    var maxLength = Math.max(len1, len2);
+    var similarity = maxLength === 0 ? 1 : (maxLength - distance) / maxLength;
+    
+    return similarity;
+}
+
 };
 let mostViewed = [];
 let globalChat = ``;
 let maxDate = 0;
+let userAvatars = {};
 
 function getComments(videoId){
     let allComments = Utils.getJSON('./comments.json') || {};
@@ -243,6 +282,28 @@ function updateArchive(newArchive){
     }
 }
 
+function loadUserAvatars(){
+    let avatars = Utils.getJSON('./avatars.json');
+    if(avatars){
+        userAvatars = avatars;
+    }
+}
+
+function saveUserAvatars(){
+    fs.writeFileSync('./avatars.json', JSON.stringify(userAvatars), 'utf-8');
+}
+
+function loadChatMessages(){
+    let messages = Utils.getJSON('./chatmessages.json');
+    if(messages){
+        msgs = messages;
+    }
+}
+
+function saveChatMessages(){
+    fs.writeFileSync('./chatmessages.json', JSON.stringify(msgs), 'utf-8');
+}
+
 app.get('/video', async (req, res) => {
     try {
         let acceptHeader = req.get('Accept') || '';
@@ -327,6 +388,8 @@ let uses = {};
 let warnings = {};
 let commentUses = {};
 let commentWarnings = {};
+let chatUses = {};
+let chatWarnings = {};
 
 function modifyUses(ip,amt){
     if(uses[ip]==undefined)uses[ip]=0;
@@ -348,6 +411,16 @@ function modifyCommentWarnings(ip,amt){
     commentWarnings[ip]+=amt;
 }
 
+function modifyChatUses(ip,amt){
+    if(chatUses[ip]==undefined)chatUses[ip]=0;
+    chatUses[ip]+=amt;
+}
+
+function modifyChatWarnings(ip,amt){
+    if(chatWarnings[ip]==undefined)chatWarnings[ip]=0;
+    chatWarnings[ip]+=amt;
+}
+
 function inNeighborhood(ip1, ip2, subnetMask) {
   var parseIp = (ipString) => ipString.split('.').map(Number);
   var parseSubnetMask = (maskString) => maskString.split('.').map(Number);
@@ -366,10 +439,36 @@ function currentDate(){
     let d = new Date();
     return d.toDateString();
 }
+let topTrending = [];
+function getTrending(){
+    let result = [];
+    fs.readdir(__dirname+'/user_cont/videos', (err, files) => {
+        if(err){
+            console.error('Failed to get videos: ', err);
+            return;
+        }
+        files.forEach(file => {
+            let videoCont = Utils.getJSON("./user_cont/videos/"+file);
+            let thisRating = getRating(videoCont["id"]);
+            videoCont["stars"] = thisRating || 0;
+            if(videoCont["creator"] !== undefined)delete videoCont["creator"];
+            if(videoCont["timestamp"] == undefined)videoCont["timestamp"]="Unknown";
+            result = [...result,videoCont];
+        });
+        result.sort((a,b) => b.date-a.date);
+        let newest15 = result.slice(0,15);
+        newest15.sort((a,b) => b.views-a.views);
+        topTrending = newest15.slice(0,7);
+    });
+}
 
 compileMostViewed();
 updateArchive();
-setInterval(() => {compileMostViewed();},30000);
+loadUserAvatars();
+loadChatMessages();
+console.log(getTrending());
+setInterval(() => {compileMostViewed(); getTrending();},10000);
+setInterval(() => {saveChatMessages();},15000);
 let viewCount = 0;
 setTimeout(() => {
 mostViewed.forEach(vid => {viewCount+=vid["views"];});
@@ -387,6 +486,116 @@ io.on("connection",socket => {
         socket.disconnect(true);
         return;
     }
+
+    socket.emit("chatHistory", msgs);
+    socket.on("getTrending",data=>{
+		socket.emit("trendingPage",topTrending);
+	});
+    socket.on("chatMessage",data=>{
+        modifyChatUses(socket.ip,1);
+        setTimeout(() => {modifyChatUses(socket.ip,-1);},3000);
+        
+        if(chatUses[socket.ip] > 5){
+            modifyChatWarnings(socket.ip,1);
+            setTimeout(() => {modifyChatWarnings(socket.ip,-1);},30000);
+            if(chatWarnings[socket.ip] > 3){
+                socket.disconnect(true);
+                return;
+            }
+            socket.emit("err","You are sending messages too fast. Please slow down.");
+            return;
+        }
+        
+        if(typeof data !== "object")return;
+        if(typeof data.username !== "string")return;
+        if(typeof data.message !== "string")return;
+        
+        let imageUrl = "";
+        if(data.image && typeof data.image === "string"){
+            let sanitizedImage = Utils.sanitizeString(data.image).trim();
+            if(whitelist.some(r => sanitizedImage.startsWith(r)) && thumbnailforms.some(r => sanitizedImage.endsWith(r))){
+                imageUrl = sanitizedImage;
+            }
+        }
+        
+        let sanitizedMessage = {
+            username: Utils.sanitizeString(data.username).substring(0,28) || "Anonymous",
+            message: Utils.sanitizeString(data.message).substring(0,500),
+            image: imageUrl,
+            timestamp: Date.now(),
+            id: Utils.newId(8),
+            avatar: userAvatars[socket.ip] || ""
+        };
+        
+        msgs.push(sanitizedMessage);
+        if(msgs.length > 100){
+            msgs.shift();
+        }
+        
+        io.emit("chatMessage", sanitizedMessage);
+    });
+
+    socket.on("getVideoForEmbed",data=>{
+        if(typeof data !== "object")return;
+        if(typeof data.videoId !== "string")return;
+        
+        fs.readdir(__dirname + '/user_cont/videos', (err, files) => {
+            if(err)return;
+            
+            if(files.includes('#' + data.videoId + '.json')){
+                let thisVideo = Utils.getJSON('./user_cont/videos/#' + data.videoId + '.json');
+                if(thisVideo){
+                    if(thisVideo["creator"])delete thisVideo["creator"];
+                    socket.emit("videoEmbed",{videoId:data.videoId, video:thisVideo});
+                }
+            }
+        });
+    });
+	socket.on("searchQuery",data=>{
+		if(typeof data !== "object")return;
+		if(typeof data.query !== "string")return;
+		let result = [];
+		let sanitizedQuery = Utils.sanitizeString(data.query).toLowerCase();
+	
+		mostViewed.forEach(video => {
+			let similarity = Utils.stringErr(sanitizedQuery, video.title.toLowerCase());
+			result.push({
+				video: video,
+				similarity: similarity
+			});
+		});
+	
+		result.sort((a,b) => b.similarity - a.similarity);
+		result = result.slice(0, 20).map(item => item.video);
+		console.log(result);
+		socket.emit("searchResult",result);
+	});
+    socket.on("setAvatar",data=>{
+        if(typeof data !== "object")return;
+        if(typeof data.avatarUrl !== "string")return;
+        
+        let sanitizedAvatar = Utils.sanitizeString(data.avatarUrl).trim();
+        
+        if(sanitizedAvatar === ""){
+            userAvatars[socket.ip] = "";
+            saveUserAvatars();
+            socket.emit("avatarSet",{success:true, avatar:""});
+            return;
+        }
+        
+        if(!whitelist.some(r => sanitizedAvatar.startsWith(r)) || !thumbnailforms.some(r => sanitizedAvatar.endsWith(r))){
+            socket.emit("err","Please use a valid catbox.moe image URL for your avatar.");
+            return;
+        }
+        
+        userAvatars[socket.ip] = sanitizedAvatar;
+        saveUserAvatars();
+        socket.emit("avatarSet",{success:true, avatar:sanitizedAvatar});
+    });
+
+    socket.on("getAvatar",data=>{
+        socket.emit("currentAvatar",{avatar:userAvatars[socket.ip] || ""});
+    });
     
     socket.on("getComments",data=>{
         if(typeof data !== "object")return;
@@ -525,7 +734,29 @@ io.on("connection",socket => {
             fs.writeFileSync('./bans.js',JSON.stringify(bans),'utf-8');
             console.log("Ban success!")
     });
+    socket.on("deleteMessage",data=>{
+    if(typeof data !== "object")return;
+    if(typeof data.messageId !== "string")return;
+    if(typeof data.password !== "string")return;
     
+    if(data.password !== adminPass){
+        socket.emit("err","Invalid admin password");
+        return;
+    }
+    
+    let messageIndex = msgs.findIndex(m => m.id === data.messageId);
+    
+    if(messageIndex === -1){
+        socket.emit("err","Message not found");
+        return;
+    }
+    
+    msgs.splice(messageIndex, 1);
+    saveChatMessages();
+    
+    io.emit("chatHistory", msgs);
+    socket.emit("alert","Message deleted successfully");
+});
     socket.on("delete",data=>{
         if(typeof data !== "object")return;
         if(data.id == undefined)return;
